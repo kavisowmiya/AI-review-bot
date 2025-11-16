@@ -1,28 +1,39 @@
-import os, requests, openai
+from openai import OpenAI
+import os
+import requests
 
-repo = os.environ['GITHUB_REPOSITORY']
-pr_number = os.environ['GITHUB_REF'].split('/')[-2]  # or pass via env
-gh_token = os.environ['GH_TOKEN']
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+repo = os.environ.get("GITHUB_REPOSITORY")
+pr_number = os.environ.get("GITHUB_REF", "").split("/")[-1]
+
+gh_token = os.environ["GH_TOKEN"]
+
+headers = {
+    "Authorization": f"token {gh_token}",
+    "Accept": "application/vnd.github.v3+json"
+}
 
 # 1. Get PR files
-headers = {'Authorization': f'token {gh_token}'}
-pr_files = requests.get(f'https://api.github.com/repos/{repo}/pulls/{pr_number}/files',
-                        headers=headers).json()
+files_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files"
+files = requests.get(files_url, headers=headers).json()
 
-# 2. Concatenate file diffs
-diff_text = "\n".join([f['patch'] for f in pr_files if 'patch' in f])
+diff_text = ""
+for f in files:
+    if "patch" in f:
+        diff_text += f"File: {f['filename']}\n{f['patch']}\n\n"
 
-# 3. Ask GPT for review
-openai.api_key = os.environ['OPENAI_API_KEY']
-response = openai.ChatCompletion.create(
-    model="gpt-4",
-    messages=[{"role": "system","content":"You are a senior code reviewer."},
-              {"role":"user","content": f"Review this code diff:\n{diff_text}"}]
+# 2. GPT request using new API
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[
+        {"role": "system", "content": "You are an AI code reviewer."},
+        {"role": "user", "content": f"Review this pull request diff:\n\n{diff_text[:10000]}"}
+    ]
 )
 
-review_comment = response['choices'][0]['message']['content']
+review_comment = response.choices[0].message.content
 
-# 4. Post comment back to PR
-requests.post(f'https://api.github.com/repos/{repo}/issues/{pr_number}/comments',
-              headers=headers,
-              json={'body': review_comment})
+# 3. Post review comment to PR
+comments_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+requests.post(comments_url, headers=headers, json={"body": review_comment})
